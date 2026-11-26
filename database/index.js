@@ -1,56 +1,36 @@
 import pkg from "pg";
-import keys from "./keys.js";
+import config, { explainPgError } from "../config.js";
 
-// Read PG_CONNECT env variable to see whether or not to connect to PostgreSQL
-// If PG_CONNECT is set to "false", we skip the connection (useful for testing without a DB)
-const shouldConnect = process.env.PG_CONNECT !== "false";
+// Set PG_CONNECT=false to skip the connection (useful for testing without a DB)
+const shouldConnect = config.pgConnect;
 
-export const pool = shouldConnect
-  ? new pkg.Pool({
-      user: keys.dbUser,
-      host: keys.dbHost,
-      database: keys.dbDatabase,
-      password: keys.dbPassword,
-      port: keys.dbPort,
-      ssl:
-        process.env.NODE_ENV === "production"
-          ? {
-              rejectUnauthorized: false,
-            }
-          : false,
-    })
-  : null;
+export const pool = shouldConnect ? new pkg.Pool(config.pg) : null;
 
 if (shouldConnect) {
-  pool.query("SELECT NOW()", (err, res) => {
+  pool.query("SELECT NOW()", (err) => {
     if (err) {
       console.error("[postgres] connection failed.");
-      console.error("Error details:\n", err);
+      const hint = explainPgError(err);
+      if (hint) console.error(hint);
+      else console.error("Error details:\n", err);
       process.exit(1);
     } else {
       console.log(
-        "[postgres] connected successfully to " + keys.dbDatabase + ".",
+        "[postgres] connected successfully to " + config.pg.database + ".",
       );
     }
   });
 }
 
 // For any general query
-const query = (query, values) => {
+const query = async (text, values) => {
   if (!shouldConnect) {
     console.warn("[postgres] Query attempted but DB connection is disabled.");
-    return Promise.resolve([]);
+    return [];
   }
 
-  return new Promise(function (resolve, reject) {
-    pool.query(query, values, function (err, res) {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(res.rows);
-      }
-    });
-  });
+  const res = await pool.query(text, values);
+  return res.rows;
 };
 
 export const DB = {

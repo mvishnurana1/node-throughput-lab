@@ -2,3 +2,10 @@ node_modules
 .DS_Store
 .vscode
 keys.js
+.env
+
+# Files the Claude desktop app saves into this folder
+Claude outputs/
+
+# CPU profiles from npm run profile (large)
+bench/profiles/

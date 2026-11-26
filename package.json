@@ -1,16 +1,23 @@
 {
-  "name": "server",
+  "name": "node-throughput-lab",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "cpeak.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node cpeak.js",
     "seed": "node database/seed.js",
-    "migrate": "node database/migrate.js"
+    "migrate": "node database/migrate.js",
+    "sync": "node database/sync.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "bench": "node bench/run.js",
+    "chaos": "node bench/chaos.js",
+    "bench:redis": "node bench/redis-writes.js",
+    "bench:serialize": "node bench/serialize.js",
+    "profile": "node bench/profile.js"
   },
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Benchmarking Node.js HTTP throughput (Cpeak, Express, Fastify) with Postgres and Redis",
   "dependencies": {
     "autocannon": "^8.0.0",
     "cpeak": "^2.5.0",
@@ -18,5 +25,8 @@
     "fastify": "^5.7.1",
     "ioredis": "^5.9.2",
     "pg": "^8.17.1"
+  },
+  "engines": {
+    "node": ">=20.12"
   }
 }

@@ -11,6 +11,8 @@ module.exports = {
         NODE_ENV: "production",
         REDIS_CLUSTER: "false", // Set to "true" to enable Redis Cluster, otherwise it will use a single Redis instance
         PG_CONNECT: "true", // Set to "true" to enable PostgreSQL connection
+        // Database credentials come from .env (see .env.example).
+        // Add PGSSL: "true" here for hosted databases such as AWS RDS.
       },
     },
   ],

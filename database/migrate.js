@@ -1,13 +1,23 @@
 /*
  Run this script to migrate data from Postgres to Redis in batches.
 
+ Warning: this flushes the selected Redis database first.
+
  This does not work when Redis is clustered.
 */
 
-import { DB } from "./index.js";
-import Redis from "ioredis";
+import pkg from "pg";
+import config, { explainPgError } from "../config.js";
+import { codeFingerprint } from "../utils.js";
+import { redis } from "./redis.js";
+import { UNIQUE_SET, ID_SEQUENCE } from "./codes.js";
 
-const redis = new Redis();
+if (config.redis.cluster) {
+  console.error("migrate.js does not support Redis Cluster.");
+  process.exit(1);
+}
+
+const pool = new pkg.Pool(config.pg);
 
 const BATCH_SIZE = 2000;
 
@@ -22,54 +32,52 @@ async function migrate() {
   console.log("Flushed existing Redis data.");
 
   while (true) {
-    // Fetch a batch of 2000 records
-    const rows = await DB.query(
-      `SELECT id, code, created_at FROM codes 
-       WHERE id > $1 
-       ORDER BY id ASC 
+    const { rows } = await pool.query(
+      `SELECT id, code, created_at FROM codes
+       WHERE id > $1
+       ORDER BY id ASC
        LIMIT $2`,
       [lastId, BATCH_SIZE],
     );
 
     if (rows.length === 0) break; // No more records, we are done!
 
-    // Prepare redis pipeline
     const pipeline = redis.pipeline();
 
     for (const row of rows) {
-      // Store data in hash
       pipeline.hset(`code:${row.id}`, {
         id: row.id,
         code: row.code,
         created_at: new Date(row.created_at).toISOString(),
       });
 
-      // For unique constraint
-      pipeline.sadd("codes:unique", row.code);
+      // For the unique constraint (fingerprint, same as /code-fast uses)
+      pipeline.sadd(UNIQUE_SET, codeFingerprint(row.code));
 
-      // Update for next batch
       lastId = row.id;
     }
 
-    // Send this batch to Redis
     await pipeline.exec();
 
     totalProcessed += rows.length;
 
-    // Log progress gradually
     if (totalProcessed % 100000 === 0) {
       console.log(`Processed ${totalProcessed} records...`);
     }
   }
 
-  // Set the auto-increment sequence to the final max id
-  await redis.set("codes:seq", lastId);
+  // Continue the id sequence from Postgres' highest id
+  await redis.set(ID_SEQUENCE, lastId);
 
   console.log(`Migration Finished. Total records: ${totalProcessed}`);
-  process.exit();
 }
 
-migrate().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+migrate()
+  .catch((err) => {
+    console.error(explainPgError(err) ?? err);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await pool.end();
+    redis.disconnect();
+  });

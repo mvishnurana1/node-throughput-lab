@@ -2,7 +2,12 @@ import cpeak, { parseJSON } from "cpeak";
 import crypto from "crypto";
 import { DB } from "./database/index.js";
 import { redis } from "./database/redis.js";
-import { generateCode, getMaxId } from "./utils.js";
+import { generateCode } from "./utils.js";
+import {
+  createCodeFast,
+  createCodeUltraFast,
+  getMaxId,
+} from "./database/codes.js";
 
 const app = cpeak();
 
@@ -77,8 +82,9 @@ app.route("post", "/code", async (req, res) => {
 
     res.status(201).json({ created_code: result[0] });
   } catch (err) {
-    if (err.code === "23505") {
-      // Unique violation
+    if (err.code === "23505" && err.constraint === "codes_code_key") {
+      // Unique violation on the code column. Other unique violations (such as
+      // the id) are server-side problems and must not be reported as a 409.
       return res.status(409).json({ error: "Code already exists." });
     }
 
@@ -181,27 +187,15 @@ app.route("get", "/code-v4", async (req, res) => {
 app.route("post", "/code-fast", async (req, res) => {
   const code = generateCode();
 
-  // Check uniqueness (O(1))
-  // SADD returns 1 if added (new), 0 if exists (duplicate)
-  const isNew = await redis.sadd("codes:unique", code);
+  // Uniqueness check, id, record and sync-queue entry in one atomic
+  // Redis call (a Lua script, see database/redis.js). O(1).
+  const record = await createCodeFast(code);
 
-  if (isNew === 0) {
+  if (!record) {
     return res.status(409).json({ error: "Code already exists." });
   }
 
-  // Generate ID (Incrementing Sequence O(1))
-  const id = await redis.incr("codes:seq");
-  const created_at = new Date().toISOString();
-
-  // Pipeline these for speed (1 network round trip instead of 2)
-  const pipeline = redis.pipeline();
-  // Store Data (O(1) Hash Set)
-  pipeline.hset(`code:${id}`, { id, code, created_at });
-
-  // We will add the ids to a queue so that later a background worker can sync to Postgres
-  pipeline.lpush("codes:sync_queue", id);
-
-  await pipeline.exec();
+  const { id, created_at } = record;
 
   res.status(201).json({
     created_code: { id, code, created_at },
@@ -209,45 +203,10 @@ app.route("post", "/code-fast", async (req, res) => {
 });
 
 app.route("post", "/code-ultra-fast", async (req, res) => {
-  /**
-   * We won't bother with id uniqueness here because at a rate of 1 million
-   * requests per second, it would take approximately 86,000 years to reach a 50%
-   * probability of at least one id duplicate.
-   *
-   *
-   * The math is based on the birthday paradox problem approximation:
-   * P(collision) ≈ 1 - e^(-n²/(2N))
-   *
-   * Where:
-   * n = number of UUIDs generated
-   * N = total possible UUIDs = 2^122
-   * e = Euler's number (≈ 2.71828)
-   *
-   * For 50% collision probability, we solve:
-   * 0.5 = 1 - e^(-n²/(2×2^122))
-   *
-   * This gives n ≈ 2.7×10^18 UUIDs. At 1 million UUIDs per second, this would take:
-   *
-   * Time (seconds) = n / 1,000,000 = 2.7×10^12 seconds
-   * Time (years) = 2.7×10^12 / (60×60×24×365) ≈ 86,000 years.
-   *
-   * Thus, for all practical purposes, we can consider UUID collisions negligible
-   * in this context.
-   */
-  const id = crypto.randomUUID(); // generates a 122-bit random UUID
+  // UUID ids, no uniqueness check (see database/codes.js for why that's safe)
+  const record = await createCodeUltraFast(generateCode());
 
-  const code = generateCode();
-  const created_at = new Date().toISOString();
-
-  const record = JSON.stringify({ id, code, created_at });
-
-  await redis.set(`code:{${id}}`, record);
-
-  // The sync queue
-  const shard = Math.floor(Math.random() * 100) + 1;
-  await redis.lpush(`codes:sync_queue:{${shard}}`, id);
-
-  res.status(201).json({ created_code: { id, code, created_at } });
+  res.status(201).json({ created_code: record });
 });
 
 // Gets a code but through Redis for super fast O(1) lookups

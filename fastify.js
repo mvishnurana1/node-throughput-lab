@@ -2,7 +2,12 @@ import Fastify from "fastify";
 import crypto from "crypto";
 import { DB } from "./database/index.js";
 import { redis } from "./database/redis.js";
-import { generateCode, getMaxId } from "./utils.js";
+import { generateCode } from "./utils.js";
+import {
+  createCodeFast,
+  createCodeUltraFast,
+  getMaxId,
+} from "./database/codes.js";
 
 const app = Fastify({ bodyLimit: 1024 * 1024 });
 
@@ -75,8 +80,9 @@ app.post("/code", async (req, res) => {
 
     res.status(201).send({ created_code: result[0] });
   } catch (err) {
-    if (err.code === "23505") {
-      // Unique violation
+    if (err.code === "23505" && err.constraint === "codes_code_key") {
+      // Unique violation on the code column. Other unique violations (such as
+      // the id) are server-side problems and must not be reported as a 409.
       return res.status(409).send({ error: "Code already exists." });
     }
     throw err;
@@ -85,6 +91,7 @@ app.post("/code", async (req, res) => {
 
 // Reads a simple random code from the database and returns it
 app.get("/code-v1", async (req, res) => {
+  // This is Big O(n) - Full Table Scan
   const result = await DB.query(
     `
       SELECT id, code, created_at
@@ -154,9 +161,9 @@ app.get("/code-v3", async (req, res) => {
 });
 
 app.get("/code-v4", async (req, res) => {
-  const randomId = crypto.randomInt(1, 700000 + 1);
+  const randomId = crypto.randomInt(1, 10_000_000 + 1); // kinda like cheating
 
-  // Fetch the record by ID (Index Lookup)
+  // Fetch the record by ID (Index Lookup). This is Big O(1)
   const result = await DB.query(
     `
       SELECT id, code, created_at
@@ -177,31 +184,26 @@ app.get("/code-v4", async (req, res) => {
 app.post("/code-fast", async (req, res) => {
   const code = generateCode();
 
-  // Check uniqueness (O(1))
-  // SADD returns 1 if added (new), 0 if exists (duplicate)
-  const isNew = await redis.sadd("codes:unique", code);
+  // Uniqueness check, id, record and sync-queue entry in one atomic
+  // Redis call (a Lua script, see database/redis.js). O(1).
+  const record = await createCodeFast(code);
 
-  if (isNew === 0) {
+  if (!record) {
     return res.status(409).send({ error: "Code already exists." });
   }
 
-  // Generate ID (Incrementing Sequence O(1))
-  const id = await redis.incr("codes:seq");
-  const created_at = new Date().toISOString();
-
-  // Pipeline these for speed (1 network round trip instead of 2)
-  const pipeline = redis.pipeline();
-  // Store Data (O(1) Hash Set)
-  pipeline.hset(`code:${id}`, { id, code, created_at });
-
-  // We will add the ids to a queue so that later a background worker can sync to Postgres
-  pipeline.lpush("codes:sync_queue", id);
-
-  await pipeline.exec();
+  const { id, created_at } = record;
 
   res.status(201).send({
     created_code: { id, code, created_at },
   });
+});
+
+app.post("/code-ultra-fast", async (req, res) => {
+  // UUID ids, no uniqueness check (see database/codes.js for why that's safe)
+  const record = await createCodeUltraFast(generateCode());
+
+  res.status(201).send({ created_code: record });
 });
 
 // Gets a code but through Redis for super fast O(1) lookups
