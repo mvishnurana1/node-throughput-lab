@@ -9,8 +9,6 @@ What's in it:
 - **Evidence it works:** a chaos test that repeatedly kills the sync worker under load and checks every record, plus 25 integration tests. Both run in CI.
 - **Measurement tools:** a framework × endpoint benchmark matrix, a CPU profiler for any endpoint, and focused benchmarks for Redis write strategies and JSON serialization.
 
-**Origin:** this started from the code in Cododev's video [*Let's Handle 1 Million Requests per Second*](https://youtu.be/W4EwfEU8CGA), which reached a million requests per second with a large AWS deployment and a C++ server. This repo focuses on the Node.js side on a single machine. It fixes the bugs listed under [Changes from the original](#changes-from-the-original) and adds the tests, tooling and investigations described in [docs/findings.md](docs/findings.md).
-
 ---
 
 ### Findings
